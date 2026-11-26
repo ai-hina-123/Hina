@@ -2,9 +2,11 @@ package com.example.hina
 
 import android.Manifest
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
+import android.media.AudioManager
 import android.os.Bundle
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
@@ -22,6 +24,38 @@ class MainActivity : Activity(), RecognitionListener {
     private lateinit var result: TextView
     private var recognizer: SpeechRecognizer? = null
     private var tts: TextToSpeech? = null
+
+    private val aliases = mapOf(
+        "व्हाट्सएप" to "whatsapp",
+        "व्हाट्सऐप" to "whatsapp",
+        "वॉट्सऐप" to "whatsapp",
+        "वाट्सएप" to "whatsapp",
+        "वॉट्सएप" to "whatsapp",
+        "यूट्यूब" to "youtube",
+        "यू ट्यूब" to "youtube",
+        "इंस्टाग्राम" to "instagram",
+        "फेसबुक" to "facebook",
+        "क्रोम" to "chrome",
+        "कैमरा" to "camera",
+        "गैलरी" to "gallery",
+        "सेटिंग्स" to "settings",
+        "सेटिंग" to "settings",
+        "जीमेल" to "gmail",
+        "गूगल" to "google",
+        "मैप्स" to "maps",
+        "टेलीग्राम" to "telegram",
+        "स्नैपचैट" to "snapchat",
+        "कैलकुलेटर" to "calculator",
+        "घड़ी" to "clock"
+    )
+
+    private val openWords = listOf(
+        "kholo", "khol", "open", "launch", "start", "chalu", "खोलो", "खोल", "चालू", "ओपन"
+    )
+
+    private val volumeWords = listOf(
+        "volume", "awaz", "awaaz", "आवाज", "वॉल्यूम", "वोल्यूम", "वाल्यूम"
+    )
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -113,6 +147,84 @@ class MainActivity : Activity(), RecognitionListener {
         tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "hina")
     }
 
+    private fun normalize(t: String): String {
+        var s = t.lowercase(Locale.ROOT)
+        for ((k, v) in aliases) {
+            s = s.replace(k, v)
+        }
+        return s
+    }
+
+    private fun findApp(s: String): Pair<String, String>? {
+        val pm = packageManager
+        val intent = Intent(Intent.ACTION_MAIN)
+        intent.addCategory(Intent.CATEGORY_LAUNCHER)
+        val apps = pm.queryIntentActivities(intent, 0)
+        var best: Pair<String, String>? = null
+        var bestLen = 0
+        for (ri in apps) {
+            val pkg = ri.activityInfo.packageName
+            if (pkg == packageName) continue
+            val label = ri.loadLabel(pm).toString()
+            val l = label.lowercase(Locale.ROOT)
+            if (l.length >= 3 && s.contains(l) && l.length > bestLen) {
+                best = Pair(label, pkg)
+                bestLen = l.length
+            }
+        }
+        return best
+    }
+
+    private fun handle(text: String): String {
+        val s = normalize(text)
+        val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+
+        val isVolume = volumeWords.any { s.contains(it) }
+        if (isVolume) {
+            val up = listOf("badha", "बढ", "up", "zyada", "ज्यादा", "increase", "full")
+            val down = listOf("kam", "कम", "down", "ghata", "घटा", "decrease", "low")
+            if (up.any { s.contains(it) }) {
+                am.adjustStreamVolume(
+                    AudioManager.STREAM_MUSIC,
+                    AudioManager.ADJUST_RAISE,
+                    AudioManager.FLAG_SHOW_UI
+                )
+                return "Volume badha diya"
+            }
+            if (down.any { s.contains(it) }) {
+                am.adjustStreamVolume(
+                    AudioManager.STREAM_MUSIC,
+                    AudioManager.ADJUST_LOWER,
+                    AudioManager.FLAG_SHOW_UI
+                )
+                return "Volume kam kar diya"
+            }
+        }
+
+        if (s.contains("home") || s.contains("होम")) {
+            val h = Intent(Intent.ACTION_MAIN)
+            h.addCategory(Intent.CATEGORY_HOME)
+            h.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            startActivity(h)
+            return "Home screen par aa gayi"
+        }
+
+        val wantsOpen = openWords.any { s.contains(it) }
+        if (wantsOpen) {
+            val app = findApp(s)
+            if (app != null) {
+                val launch = packageManager.getLaunchIntentForPackage(app.second)
+                if (launch != null) {
+                    startActivity(launch)
+                    return app.first + " khol diya"
+                }
+            }
+            return "Mujhe woh app nahi mila"
+        }
+
+        return "Aapne kaha: " + text
+    }
+
     override fun onResults(results: Bundle?) {
         val list = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
         val text = list?.firstOrNull()
@@ -120,9 +232,10 @@ class MainActivity : Activity(), RecognitionListener {
             status.text = "Kuch sunai nahi diya"
             return
         }
-        status.text = "Maine suna:"
         result.text = text
-        speak("Aapne kaha: $text")
+        val reply = handle(text)
+        status.text = reply
+        speak(reply)
     }
 
     override fun onError(error: Int) {
