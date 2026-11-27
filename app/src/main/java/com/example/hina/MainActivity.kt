@@ -8,11 +8,14 @@ import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.media.AudioManager
+import android.net.Uri
 import android.os.Bundle
+import android.provider.ContactsContract
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.text.InputType
 import android.view.Gravity
 import android.view.View
@@ -35,6 +38,15 @@ class MainActivity : Activity(), RecognitionListener {
     // Yahan apna pehla naam ya nickname likh sakte ho
     private val userName = "dost"
 
+    // WhatsApp flow ki state: 0 = normal, 1 = naam, 2 = message, 3 = confirm
+    private var state = 0
+    private var pendingName = ""
+    private var pendingNumber = ""
+    private var pendingMsg = ""
+
+    @Volatile
+    private var listenAfter = false
+
     private val greetings = listOf(
         "Heyyy NAME! Kaise ho? Aaj kya plan hai?",
         "Arre NAME! Finally yaad aayi meri!",
@@ -55,6 +67,8 @@ class MainActivity : Activity(), RecognitionListener {
         "वॉट्सएप" to "whatsapp",
         "यूट्यूब" to "youtube",
         "यू ट्यूब" to "youtube",
+        "फ्लिपकार्ट" to "flipkart",
+        "फ्लिपकार्ड" to "flipkart",
         "इंस्टाग्राम" to "instagram",
         "फेसबुक" to "facebook",
         "क्रोम" to "chrome",
@@ -77,6 +91,30 @@ class MainActivity : Activity(), RecognitionListener {
 
     private val volumeWords = listOf(
         "volume", "awaz", "awaaz", "आवाज", "वॉल्यूम", "वोल्यूम", "वाल्यूम"
+    )
+
+    private val msgWords = listOf("message", "msg", "मैसेज", "मेसेज", "संदेश")
+    private val sendWords = listOf("bhej", "भेज", "send", "सेंड", "likh", "लिख")
+
+    private val stopWords = setOf(
+        "youtube", "flipkart", "yt", "hina", "हिना", "hey", "hello",
+        "par", "pe", "me", "mein", "में", "पर", "पे",
+        "search", "serch", "सर्च", "kar", "karo", "kro", "करो", "कर", "kardo",
+        "dhundo", "dhoondo", "ढूंढो", "ढूँढो", "khojo", "खोजो", "dhundh", "ढूंढ", "ढूँढ",
+        "play", "chalao", "chala", "चलाओ", "चला", "laga", "lagao", "लगाओ", "लगा",
+        "do", "दो", "mujhe", "मुझे", "zara", "please", "pls", "plz"
+    )
+
+    private val cancelWords = setOf(
+        "cancel", "cancel karo", "cancel kar do", "रहने दो", "rehne do",
+        "छोड़ो", "chhodo", "रुको", "ruko"
+    )
+    private val yesWords = listOf(
+        "haan", "han", "ha", "yes", "ok", "okay", "bhej", "kar do", "kardo",
+        "हाँ", "हां", "हा", "ठीक", "भेज", "जी"
+    )
+    private val noWords = listOf(
+        "nahi", "nahin", "no", "cancel", "mat", "नहीं", "मत", "रुको", "ruko"
     )
 
     private fun prefs(): SharedPreferences {
@@ -165,6 +203,16 @@ class MainActivity : Activity(), RecognitionListener {
                 if (r == TextToSpeech.LANG_MISSING_DATA || r == TextToSpeech.LANG_NOT_SUPPORTED) {
                     tts?.setLanguage(Locale.US)
                 }
+                tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                    override fun onStart(utteranceId: String?) {}
+                    override fun onError(utteranceId: String?) {}
+                    override fun onDone(utteranceId: String?) {
+                        if (listenAfter) {
+                            listenAfter = false
+                            runOnUiThread { startListening() }
+                        }
+                    }
+                })
             }
         }
     }
@@ -187,7 +235,8 @@ class MainActivity : Activity(), RecognitionListener {
             RecognizerIntent.EXTRA_LANGUAGE_MODEL,
             RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
         )
-        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "hi-IN")
+        // Contact ka naam English spelling mein sunne ke liye
+        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, if (state == 1) "en-IN" else "hi-IN")
         recognizer?.startListening(intent)
         status.text = "Sun rahi hoon..."
     }
@@ -198,7 +247,12 @@ class MainActivity : Activity(), RecognitionListener {
         grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+        val granted = grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
+        if (requestCode == 2) {
+            status.text = if (granted) "Contacts mil gaye, ab dobara bolo" else "Contacts ki permission chahiye"
+            return
+        }
+        if (granted) {
             startListening()
         } else {
             status.text = "Mic ki permission chahiye"
@@ -224,6 +278,26 @@ class MainActivity : Activity(), RecognitionListener {
         return s
     }
 
+    private fun tokensOf(s: String): List<String> {
+        return s.split(" ").map { it.trim(',', '.', '!', '?') }.filter { it.isNotEmpty() }
+    }
+
+    private fun extractQuery(s: String): String {
+        return tokensOf(s)
+            .filter { !stopWords.contains(it) && !openWords.contains(it) }
+            .joinToString(" ")
+    }
+
+    private fun openLink(url: String, pkg: String) {
+        val i = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+        i.setPackage(pkg)
+        try {
+            startActivity(i)
+        } catch (e: Exception) {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+        }
+    }
+
     private fun findApp(s: String): Pair<String, String>? {
         val pm = packageManager
         val intent = Intent(Intent.ACTION_MAIN)
@@ -244,9 +318,90 @@ class MainActivity : Activity(), RecognitionListener {
         return best
     }
 
+    private fun findContact(name: String): Pair<String, String>? {
+        val cur = contentResolver.query(
+            ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+            arrayOf(
+                ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
+                ContactsContract.CommonDataKinds.Phone.NUMBER
+            ),
+            ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME + " LIKE ?",
+            arrayOf("%" + name + "%"),
+            null
+        ) ?: return null
+        var best: Pair<String, String>? = null
+        cur.use { c ->
+            if (c.moveToFirst()) {
+                best = Pair(c.getString(0) ?: "", c.getString(1) ?: "")
+            }
+        }
+        return best
+    }
+
+    private fun waNumber(raw: String): String {
+        var d = raw.filter { it.isDigit() }
+        if (d.length == 11 && d.startsWith("0")) d = d.substring(1)
+        if (d.length == 10) d = "91" + d
+        return d
+    }
+
+    private fun resetFlow() {
+        state = 0
+        pendingName = ""
+        pendingNumber = ""
+        pendingMsg = ""
+    }
+
+    private fun handleFlow(text: String, s: String): String {
+        val t = s.trim()
+        if (cancelWords.contains(t)) {
+            resetFlow()
+            return "Theek hai, cancel kar diya"
+        }
+        if (state == 1) {
+            if (checkSelfPermission(Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(arrayOf(Manifest.permission.READ_CONTACTS), 2)
+                resetFlow()
+                return "Contacts ki permission de do, phir dobara bolo"
+            }
+            val name = text.trim().replace(Regex("(?i)\\s+ko$"), "")
+            val c = findContact(name)
+            if (c == null) {
+                listenAfter = true
+                return "Is naam ka contact nahi mila. Naam dobara bolo, ya cancel bolo."
+            }
+            pendingName = c.first
+            pendingNumber = waNumber(c.second)
+            state = 2
+            listenAfter = true
+            return pendingName + " ko kya message bhejna hai?"
+        }
+        if (state == 2) {
+            pendingMsg = text.trim()
+            state = 3
+            listenAfter = true
+            return pendingName + " ko yeh bhejna hai: " + pendingMsg + ". Bhej doon? Haan ya nahi bolo."
+        }
+        val yes = yesWords.any { t.contains(it) }
+        val no = noWords.any { t.contains(it) }
+        if (yes && !no) {
+            openLink(
+                "https://wa.me/" + pendingNumber + "?text=" + Uri.encode(pendingMsg),
+                "com.whatsapp"
+            )
+            resetFlow()
+            return "WhatsApp khol diya. Message likha hua hai, bas send dabao."
+        }
+        resetFlow()
+        return "Theek hai, message nahi bheja."
+    }
+
     // Local command ho toh jawab deta hai, nahi toh null (tab AI brain se poochte hain)
     private fun handle(text: String): String? {
+        listenAfter = false
         val s = normalize(text)
+        if (state != 0) return handleFlow(text, s)
+
         val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
 
         val isVolume = volumeWords.any { s.contains(it) }
@@ -279,6 +434,34 @@ class MainActivity : Activity(), RecognitionListener {
             return "Home screen par aa gayi"
         }
 
+        if (msgWords.any { s.contains(it) } && sendWords.any { s.contains(it) }) {
+            state = 1
+            listenAfter = true
+            return "Kisko message bhejna hai? Naam bolo. Cancel bolke band kar sakte ho."
+        }
+
+        if (s.contains("youtube")) {
+            val q = extractQuery(s)
+            if (q.isNotEmpty()) {
+                openLink(
+                    "https://www.youtube.com/results?search_query=" + Uri.encode(q),
+                    "com.google.android.youtube"
+                )
+                return "YouTube par " + q + " search kar rahi hoon"
+            }
+        }
+
+        if (s.contains("flipkart")) {
+            val q = extractQuery(s)
+            if (q.isNotEmpty()) {
+                openLink(
+                    "https://www.flipkart.com/search?q=" + Uri.encode(q),
+                    "com.flipkart.android"
+                )
+                return "Flipkart par " + q + " dhundh rahi hoon"
+            }
+        }
+
         val wantsOpen = openWords.any { s.contains(it) }
         if (wantsOpen) {
             val app = findApp(s)
@@ -292,7 +475,7 @@ class MainActivity : Activity(), RecognitionListener {
             return "Mujhe woh app nahi mila"
         }
 
-        val tokens = s.split(" ").map { it.trim(',', '.', '!', '?') }.filter { it.isNotEmpty() }
+        val tokens = tokensOf(s)
         if (tokens.size <= 3 && tokens.any { greetWords.contains(it) }) {
             avatar.wave()
             return greetings.random().replace("NAME", userName)
@@ -339,6 +522,7 @@ class MainActivity : Activity(), RecognitionListener {
     override fun onError(error: Int) {
         status.text = "Samajh nahi aaya (error $error). Dobara try karo."
         avatar.say("Samajh nahi aaya, dobara bolo")
+        listenAfter = false
         speak("Mujhe samajh nahi aaya")
     }
 
