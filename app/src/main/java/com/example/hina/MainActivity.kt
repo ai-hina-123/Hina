@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.media.AudioManager
@@ -12,9 +13,13 @@ import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
+import android.text.InputType
 import android.view.Gravity
+import android.view.View
 import android.widget.Button
+import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import java.util.Locale
 
@@ -22,10 +27,12 @@ class MainActivity : Activity(), RecognitionListener {
 
     private lateinit var avatar: AvatarView
     private lateinit var status: TextView
+    private lateinit var replyView: TextView
+    private lateinit var keyArea: LinearLayout
     private var recognizer: SpeechRecognizer? = null
     private var tts: TextToSpeech? = null
 
-    // Yahan apna naam likh sakte ho, Hina isi naam se bulayegi
+    // Yahan apna pehla naam ya nickname likh sakte ho
     private val userName = "dost"
 
     private val greetings = listOf(
@@ -72,6 +79,10 @@ class MainActivity : Activity(), RecognitionListener {
         "volume", "awaz", "awaaz", "आवाज", "वॉल्यूम", "वोल्यूम", "वाल्यूम"
     )
 
+    private fun prefs(): SharedPreferences {
+        return getSharedPreferences("hina", Context.MODE_PRIVATE)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -81,9 +92,18 @@ class MainActivity : Activity(), RecognitionListener {
         root.setPadding(24, 24, 24, 24)
 
         avatar = AvatarView(this)
-        val avatarParams = LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
-        )
+        avatar.setOnLongClickListener {
+            keyArea.visibility = View.VISIBLE
+            true
+        }
+
+        replyView = TextView(this)
+        replyView.text = ""
+        replyView.setTextColor(Color.WHITE)
+        replyView.textSize = 16f
+        replyView.setPadding(16, 8, 16, 8)
+        val scroll = ScrollView(this)
+        scroll.addView(replyView)
 
         status = TextView(this)
         status.text = "Button dabao aur bolo"
@@ -97,9 +117,43 @@ class MainActivity : Activity(), RecognitionListener {
         btn.textSize = 20f
         btn.setOnClickListener { startListening() }
 
-        root.addView(avatar, avatarParams)
+        keyArea = LinearLayout(this)
+        keyArea.orientation = LinearLayout.VERTICAL
+        val keyLabel = TextView(this)
+        keyLabel.text = "AI brain key (Gemini)"
+        keyLabel.setTextColor(Color.parseColor("#7FDBFF"))
+        keyLabel.textSize = 14f
+        keyLabel.gravity = Gravity.CENTER
+        val keyBox = EditText(this)
+        keyBox.hint = "Key yahan paste karo"
+        keyBox.setHintTextColor(Color.GRAY)
+        keyBox.setTextColor(Color.WHITE)
+        keyBox.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        keyBox.setSingleLine(true)
+        val saveBtn = Button(this)
+        saveBtn.text = "Key save karo"
+        saveBtn.setOnClickListener {
+            val k = keyBox.text.toString().trim()
+            if (k.isNotEmpty()) {
+                prefs().edit().putString("gkey", k).apply()
+                keyBox.setText("")
+                keyArea.visibility = View.GONE
+                status.text = "Key save ho gayi. Ab mujhse kuch bhi poocho!"
+            }
+        }
+        keyArea.addView(keyLabel)
+        keyArea.addView(keyBox)
+        keyArea.addView(saveBtn)
+        val savedKey = prefs().getString("gkey", "") ?: ""
+        keyArea.visibility = if (savedKey.isEmpty()) View.VISIBLE else View.GONE
+
+        root.addView(avatar, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+        root.addView(scroll, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, 0, 0.6f))
         root.addView(status)
         root.addView(btn)
+        root.addView(keyArea)
         setContentView(root)
 
         avatar.wave()
@@ -155,6 +209,13 @@ class MainActivity : Activity(), RecognitionListener {
         tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "hina")
     }
 
+    private fun show(reply: String) {
+        replyView.text = reply
+        avatar.say(reply)
+        status.text = "Button dabao aur bolo"
+        speak(reply)
+    }
+
     private fun normalize(t: String): String {
         var s = t.lowercase(Locale.ROOT)
         for ((k, v) in aliases) {
@@ -183,7 +244,8 @@ class MainActivity : Activity(), RecognitionListener {
         return best
     }
 
-    private fun handle(text: String): String {
+    // Local command ho toh jawab deta hai, nahi toh null (tab AI brain se poochte hain)
+    private fun handle(text: String): String? {
         val s = normalize(text)
         val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
 
@@ -230,13 +292,32 @@ class MainActivity : Activity(), RecognitionListener {
             return "Mujhe woh app nahi mila"
         }
 
-        val tokens = s.split(" ").map { it.trim(',', '.', '!', '?') }
-        if (tokens.any { greetWords.contains(it) }) {
+        val tokens = s.split(" ").map { it.trim(',', '.', '!', '?') }.filter { it.isNotEmpty() }
+        if (tokens.size <= 3 && tokens.any { greetWords.contains(it) }) {
             avatar.wave()
             return greetings.random().replace("NAME", userName)
         }
 
-        return "Yeh abhi mere bas ka nahi hai, AI brain aane wala hai!"
+        return null
+    }
+
+    private fun askBrain(text: String) {
+        val key = prefs().getString("gkey", "") ?: ""
+        if (key.isEmpty()) {
+            keyArea.visibility = View.VISIBLE
+            show("Mujhe AI brain ki key chahiye. Neeche box mein paste karo.")
+            return
+        }
+        status.text = "Soch rahi hoon..."
+        HinaBrain.ask(
+            key, userName, text,
+            { reply -> runOnUiThread { show(reply) } },
+            { err ->
+                runOnUiThread {
+                    show("Mera dimaag abhi busy hai, error " + err + ". Thodi der baad try karo.")
+                }
+            }
+        )
     }
 
     override fun onResults(results: Bundle?) {
@@ -247,10 +328,12 @@ class MainActivity : Activity(), RecognitionListener {
             return
         }
         avatar.say(text)
-        val reply = handle(text)
-        avatar.say(reply)
-        status.text = "Button dabao aur bolo"
-        speak(reply)
+        val local = handle(text)
+        if (local != null) {
+            show(local)
+        } else {
+            askBrain(text)
+        }
     }
 
     override fun onError(error: Int) {
