@@ -4,7 +4,6 @@ import android.Manifest
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
-import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.media.AudioManager
@@ -13,20 +12,33 @@ import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
-import android.text.InputType
 import android.view.Gravity
 import android.widget.Button
-import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
 import java.util.Locale
 
 class MainActivity : Activity(), RecognitionListener {
 
+    private lateinit var avatar: AvatarView
     private lateinit var status: TextView
-    private lateinit var result: TextView
     private var recognizer: SpeechRecognizer? = null
     private var tts: TextToSpeech? = null
+
+    // Yahan apna naam likh sakte ho, Hina isi naam se bulayegi
+    private val userName = "dost"
+
+    private val greetings = listOf(
+        "Heyyy NAME! Kaise ho? Aaj kya plan hai?",
+        "Arre NAME! Finally yaad aayi meri!",
+        "Hello hello! Padhai ho gayi ya bahana dhundh rahe ho?",
+        "Hii NAME! Main ready hoon, bolo kya karna hai?"
+    )
+
+    private val greetWords = setOf(
+        "hello", "hi", "hey", "hii", "hlo", "namaste", "hina",
+        "हेलो", "हैलो", "हाय", "नमस्ते", "हिना", "हलो", "हे"
+    )
 
     private val aliases = mapOf(
         "व्हाट्सएप" to "whatsapp",
@@ -60,78 +72,38 @@ class MainActivity : Activity(), RecognitionListener {
         "volume", "awaz", "awaaz", "आवाज", "वॉल्यूम", "वोल्यूम", "वाल्यूम"
     )
 
-    private fun prefs(): SharedPreferences {
-        return getSharedPreferences("hina", Context.MODE_PRIVATE)
-    }
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
         val root = LinearLayout(this)
         root.orientation = LinearLayout.VERTICAL
-        root.gravity = Gravity.CENTER
         root.setBackgroundColor(Color.parseColor("#0A0F1E"))
-        root.setPadding(48, 48, 48, 48)
+        root.setPadding(24, 24, 24, 24)
 
-        val title = TextView(this)
-        title.text = "HINA"
-        title.setTextColor(Color.CYAN)
-        title.textSize = 36f
-        title.gravity = Gravity.CENTER
+        avatar = AvatarView(this)
+        val avatarParams = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
+        )
 
         status = TextView(this)
         status.text = "Button dabao aur bolo"
         status.setTextColor(Color.parseColor("#7FDBFF"))
-        status.textSize = 18f
+        status.textSize = 16f
         status.gravity = Gravity.CENTER
-        status.setPadding(0, 32, 0, 32)
-
-        result = TextView(this)
-        result.text = ""
-        result.setTextColor(Color.WHITE)
-        result.textSize = 22f
-        result.gravity = Gravity.CENTER
-        result.setPadding(0, 16, 0, 48)
+        status.setPadding(0, 16, 0, 16)
 
         val btn = Button(this)
         btn.text = "🎙️ Bolo"
         btn.textSize = 20f
         btn.setOnClickListener { startListening() }
 
-        val keyLabel = TextView(this)
-        keyLabel.text = "Natural voice (Gemini key)"
-        keyLabel.setTextColor(Color.parseColor("#7FDBFF"))
-        keyLabel.textSize = 14f
-        keyLabel.gravity = Gravity.CENTER
-        keyLabel.setPadding(0, 64, 0, 8)
-
-        val savedKey = prefs().getString("gkey", "") ?: ""
-        val keyBox = EditText(this)
-        keyBox.hint = if (savedKey.isEmpty()) "Key yahan paste karo" else "Key saved hai. Nayi daalni ho toh paste karo"
-        keyBox.setHintTextColor(Color.GRAY)
-        keyBox.setTextColor(Color.WHITE)
-        keyBox.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-        keyBox.setSingleLine(true)
-
-        val saveBtn = Button(this)
-        saveBtn.text = "Key save karo"
-        saveBtn.setOnClickListener {
-            val k = keyBox.text.toString().trim()
-            if (k.isNotEmpty()) {
-                prefs().edit().putString("gkey", k).apply()
-                keyBox.setText("")
-                status.text = "Key save ho gayi. Ab natural voice chalegi."
-            }
-        }
-
-        root.addView(title)
+        root.addView(avatar, avatarParams)
         root.addView(status)
-        root.addView(result)
         root.addView(btn)
-        root.addView(keyLabel)
-        root.addView(keyBox)
-        root.addView(saveBtn)
         setContentView(root)
+
+        avatar.wave()
+        avatar.say("Hello! Main Hina hoon")
 
         tts = TextToSpeech(this) { st ->
             if (st == TextToSpeech.SUCCESS) {
@@ -179,22 +151,8 @@ class MainActivity : Activity(), RecognitionListener {
         }
     }
 
-    private fun speakLocal(text: String) {
-        tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "hina")
-    }
-
     private fun speak(text: String) {
-        val key = prefs().getString("gkey", "") ?: ""
-        if (key.isEmpty()) {
-            speakLocal(text)
-            return
-        }
-        GeminiVoice.speak(key, text) { err ->
-            runOnUiThread {
-                status.text = "Natural voice nahi chali (" + err + "). Phone ki voice use kar rahi hoon."
-                speakLocal(text)
-            }
-        }
+        tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "hina")
     }
 
     private fun normalize(t: String): String {
@@ -272,7 +230,13 @@ class MainActivity : Activity(), RecognitionListener {
             return "Mujhe woh app nahi mila"
         }
 
-        return "Aapne kaha: " + text
+        val tokens = s.split(" ").map { it.trim(',', '.', '!', '?') }
+        if (tokens.any { greetWords.contains(it) }) {
+            avatar.wave()
+            return greetings.random().replace("NAME", userName)
+        }
+
+        return "Yeh abhi mere bas ka nahi hai, AI brain aane wala hai!"
     }
 
     override fun onResults(results: Bundle?) {
@@ -282,15 +246,17 @@ class MainActivity : Activity(), RecognitionListener {
             status.text = "Kuch sunai nahi diya"
             return
         }
-        result.text = text
+        avatar.say(text)
         val reply = handle(text)
-        status.text = reply
+        avatar.say(reply)
+        status.text = "Button dabao aur bolo"
         speak(reply)
     }
 
     override fun onError(error: Int) {
         status.text = "Samajh nahi aaya (error $error). Dobara try karo."
-        speakLocal("Mujhe samajh nahi aaya")
+        avatar.say("Samajh nahi aaya, dobara bolo")
+        speak("Mujhe samajh nahi aaya")
     }
 
     override fun onPartialResults(partialResults: Bundle?) {}
