@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.media.AudioManager
@@ -12,8 +13,10 @@ import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
+import android.text.InputType
 import android.view.Gravity
 import android.widget.Button
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
 import java.util.Locale
@@ -57,6 +60,10 @@ class MainActivity : Activity(), RecognitionListener {
         "volume", "awaz", "awaaz", "आवाज", "वॉल्यूम", "वोल्यूम", "वाल्यूम"
     )
 
+    private fun prefs(): SharedPreferences {
+        return getSharedPreferences("hina", Context.MODE_PRIVATE)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -91,10 +98,39 @@ class MainActivity : Activity(), RecognitionListener {
         btn.textSize = 20f
         btn.setOnClickListener { startListening() }
 
+        val keyLabel = TextView(this)
+        keyLabel.text = "Natural voice (Gemini key)"
+        keyLabel.setTextColor(Color.parseColor("#7FDBFF"))
+        keyLabel.textSize = 14f
+        keyLabel.gravity = Gravity.CENTER
+        keyLabel.setPadding(0, 64, 0, 8)
+
+        val savedKey = prefs().getString("gkey", "") ?: ""
+        val keyBox = EditText(this)
+        keyBox.hint = if (savedKey.isEmpty()) "Key yahan paste karo" else "Key saved hai. Nayi daalni ho toh paste karo"
+        keyBox.setHintTextColor(Color.GRAY)
+        keyBox.setTextColor(Color.WHITE)
+        keyBox.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        keyBox.setSingleLine(true)
+
+        val saveBtn = Button(this)
+        saveBtn.text = "Key save karo"
+        saveBtn.setOnClickListener {
+            val k = keyBox.text.toString().trim()
+            if (k.isNotEmpty()) {
+                prefs().edit().putString("gkey", k).apply()
+                keyBox.setText("")
+                status.text = "Key save ho gayi. Ab natural voice chalegi."
+            }
+        }
+
         root.addView(title)
         root.addView(status)
         root.addView(result)
         root.addView(btn)
+        root.addView(keyLabel)
+        root.addView(keyBox)
+        root.addView(saveBtn)
         setContentView(root)
 
         tts = TextToSpeech(this) { st ->
@@ -143,8 +179,22 @@ class MainActivity : Activity(), RecognitionListener {
         }
     }
 
-    private fun speak(text: String) {
+    private fun speakLocal(text: String) {
         tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "hina")
+    }
+
+    private fun speak(text: String) {
+        val key = prefs().getString("gkey", "") ?: ""
+        if (key.isEmpty()) {
+            speakLocal(text)
+            return
+        }
+        GeminiVoice.speak(key, text) { err ->
+            runOnUiThread {
+                status.text = "Natural voice nahi chali (" + err + "). Phone ki voice use kar rahi hoon."
+                speakLocal(text)
+            }
+        }
     }
 
     private fun normalize(t: String): String {
@@ -240,7 +290,7 @@ class MainActivity : Activity(), RecognitionListener {
 
     override fun onError(error: Int) {
         status.text = "Samajh nahi aaya (error $error). Dobara try karo."
-        speak("Mujhe samajh nahi aaya")
+        speakLocal("Mujhe samajh nahi aaya")
     }
 
     override fun onPartialResults(partialResults: Bundle?) {}
